@@ -79,6 +79,19 @@ export function useCashIn(id: number) {
   });
 }
 
+export function useCashOut(id: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (amount: number) =>
+      post<{ trade: Trade; portfolio: Portfolio }>(`/api/portfolios/${id}/trades/cash-out/`, { amount }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portfolio", id] });
+      qc.invalidateQueries({ queryKey: ["allocations", id] });
+      qc.invalidateQueries({ queryKey: ["trades", id] });
+    },
+  });
+}
+
 export function useBuy(id: number) {
   const qc = useQueryClient();
   return useMutation({
