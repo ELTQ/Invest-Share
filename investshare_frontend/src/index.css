@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html { color-scheme: light; }
+
+body {
+  @apply bg-bg-base text-text-primary font-sans antialiased;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.card {
+  @apply bg-white border border-stroke-soft rounded-lg shadow-sm;
+}

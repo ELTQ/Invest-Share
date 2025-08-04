@@ -1,0 +1,220 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  useAllocations, useBuy, useCashIn, useChart, useDeletePortfolio,
+  usePortfolio, useTrades, useCreatePortfolio
+} from "@/hooks/usePortfolios";
+import { apiFetch } from "@/lib/api";
+import { LineValueChart } from "@/components/LineChart";
+import { AllocationTreemap } from "@/components/Treemap";
+import { Tabs } from "@/components/Tabs";
+import { Button } from "@/components/Button";
+import { Input } from "@/components/Input";
+import { PLBadge } from "@/components/PLBadge";
+import { fmt, toNum } from "@/lib/num";
+import { me } from "@/hooks/useAuth";
+import { useQuery } from "@tanstack/react-query";
+import type { Portfolio } from "@/types";
+
+const rangeTabs = [
+  { key: "1d", label: "Day" },
+  { key: "1w", label: "Week" },
+  { key: "ytd", label: "YTD" },
+  { key: "1y", label: "Year" },
+  { key: "all", label: "All" },
+];
+
+export function MyPortfolioPage() {
+  const nav = useNavigate();
+  const [pid, setPid] = useState<number | null>(null);
+  const [range, setRange] = useState("all");
+
+  // 1) Who am I?
+  const { data: meData } = useQuery({ queryKey: ["me"], queryFn: me });
+
+  // 2) Find my portfolio by username
+  useEffect(() => {
+    let cancelled = false;
+    async function findMine() {
+      try {
+        const res = await apiFetch<any>("/api/portfolios/");
+        const list: Portfolio[] = Array.isArray(res) ? res : res.results;
+        const mine = list?.find((p: any) => p.owner_username === meData?.username);
+        if (!cancelled) setPid(mine?.id ?? null);
+      } catch {
+        if (!cancelled) setPid(null);
+      }
+    }
+    if (meData?.username) findMine();
+    return () => { cancelled = true; };
+  }, [meData?.username]);
+
+  // If I don't have a portfolio, offer to create one
+  const createPortfolio = useCreatePortfolio();
+
+  const { data: pf } = usePortfolio(pid ?? 0, { enabled: pid != null });
+  const { data: alloc } = useAllocations(pid ?? 0, { enabled: pid != null });
+  const { data: chart } = useChart(pid ?? 0, range, { enabled: pid != null });
+  const { data: trades } = useTrades(pid ?? 0, 1, { enabled: pid != null });
+
+  const cashIn = useCashIn(pid ?? 0);
+  const buy = useBuy(pid ?? 0);
+  const del = useDeletePortfolio(pid ?? 0);
+
+  const [cashAmt, setCashAmt] = useState("");
+  const [buyTicker, setBuyTicker] = useState("");
+  const [buyQty, setBuyQty] = useState("");
+
+  if (!meData) {
+    return <div className="mx-auto max-w-6xl px-4 py-10">Loading…</div>;
+  }
+
+  if (pid == null) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-6">
+        <h2 className="text-2xl font-semibold">Create your portfolio</h2>
+        <div className="card p-4 space-y-3">
+          <p className="text-text-muted">You don’t have a portfolio yet.</p>
+          <Button
+            onClick={() => {
+              createPortfolio.mutate(
+                { name: "My Portfolio", visibility: "public" },
+                {
+                  onSuccess: (p) => setPid((p as any).id),
+                }
+              );
+            }}
+            loading={createPortfolio.isPending}
+          >
+            Initialize portfolio
+          </Button>
+          {createPortfolio.error && <p className="text-danger-500 text-sm">Could not create portfolio.</p>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <header className="space-y-3">
+        <div className="text-sm text-text-muted">My Portfolio</div>
+        <h1 className="text-3xl font-semibold tnum">${fmt(pf?.total_value ?? 0, 2)}</h1>
+        <PLBadge abs={pf?.todays_change?.abs ?? 0} pct={pf?.todays_change?.pct ?? 0} />
+      </header>
+
+      <div className="flex flex-wrap gap-3">
+        <div className="card p-4 space-y-3 w-full max-w-md">
+          <h3 className="font-medium">Add Cash</h3>
+          <div className="flex gap-2">
+            <Input placeholder="Amount" value={cashAmt} onChange={(e) => setCashAmt(e.target.value)} />
+            <Button
+              onClick={() => cashIn.mutate(Number(cashAmt || 0), { onSuccess: () => setCashAmt("") })}
+              disabled={!cashAmt}
+              loading={cashIn.isPending}
+            >
+              Add
+            </Button>
+          </div>
+          {cashIn.error && <p className="text-danger-500 text-sm">Cash in failed.</p>}
+        </div>
+
+        <div className="card p-4 space-y-3 w-full max-w-md">
+          <h3 className="font-medium">Buy (market price)</h3>
+          <div className="flex gap-2">
+            <Input placeholder="Ticker" value={buyTicker} onChange={(e) => setBuyTicker(e.target.value.toUpperCase())} />
+            <Input placeholder="Qty" value={buyQty} onChange={(e) => setBuyQty(e.target.value)} />
+            <Button
+              onClick={() =>
+                buy.mutate(
+                  { ticker: buyTicker, quantity: Number(buyQty) },
+                  { onSuccess: () => { setBuyTicker(""); setBuyQty(""); } }
+                )
+              }
+              disabled={!buyTicker || !buyQty}
+              loading={buy.isPending}
+            >
+              Buy
+            </Button>
+          </div>
+          {buy.error && <p className="text-danger-500 text-sm">Buy failed.</p>}
+        </div>
+
+        <div className="flex-1"></div>
+
+        <div className="card p-4 space-y-3 w-full max-w-md">
+          <h3 className="font-medium text-danger-500">Danger zone</h3>
+          <Button variant="danger" onClick={() => {
+            if (confirm("Delete portfolio? This cannot be undone.")) {
+              del.mutate(undefined, { onSuccess: () => { setPid(null); nav("/public"); } });
+            }
+          }}>Delete portfolio</Button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-medium">Performance</h3>
+        <Tabs value={range} onChange={setRange} items={rangeTabs} />
+      </div>
+      <LineValueChart data={chart} />
+
+      <h3 className="text-lg font-medium">Allocation</h3>
+      <AllocationTreemap data={alloc?.data} />
+
+      <h3 className="text-lg font-medium">Positions</h3>
+      <div className="card overflow-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-bg-surface text-left text-text-muted">
+            <tr>
+              <th className="px-4 py-3">Ticker</th>
+              <th className="px-4 py-3">Qty</th>
+              <th className="px-4 py-3">Avg Cost</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stroke-soft">
+            {pf?.holdings?.map(h => (
+              <tr key={h.id}>
+                <td className="px-4 py-3">{h.ticker}</td>
+                <td className="px-4 py-3 tnum">{fmt(h.quantity, 4)}</td>
+                <td className="px-4 py-3 tnum">${fmt(h.avg_cost, 4)}</td>
+              </tr>
+            ))}
+            {(!pf?.holdings || pf.holdings.length === 0) && (
+              <tr><td className="px-4 py-6 text-text-muted" colSpan={3}>No positions.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 className="text-lg font-medium">Trades</h3>
+      <div className="card overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-bg-surface text-left text-text-muted">
+            <tr>
+              <th className="px-4 py-3">Time</th>
+              <th className="px-4 py-3">Type</th>
+              <th className="px-4 py-3">Ticker</th>
+              <th className="px-4 py-3">Qty</th>
+              <th className="px-4 py-3">Price</th>
+              <th className="px-4 py-3">Cash Δ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stroke-soft">
+            {trades?.results?.map(t => (
+              <tr key={t.id}>
+                <td className="px-4 py-3">{new Date(t.executed_at).toLocaleString()}</td>
+                <td className="px-4 py-3">{t.type}</td>
+                <td className="px-4 py-3">{t.ticker || "-"}</td>
+                <td className="px-4 py-3 tnum">{fmt(t.quantity, 4)}</td>
+                <td className="px-4 py-3 tnum">{t.price ? `$${fmt(t.price, 4)}` : "-"}</td>
+                <td className="px-4 py-3 tnum">{toNum(t.cash_delta) >= 0 ? "+" : ""}${fmt(t.cash_delta, 2)}</td>
+              </tr>
+            ))}
+            {(!trades?.results || trades.results.length === 0) && (
+              <tr><td className="px-4 py-6 text-text-muted" colSpan={6}>No trades.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
