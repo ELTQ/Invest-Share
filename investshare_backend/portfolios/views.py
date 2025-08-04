@@ -4,6 +4,8 @@ from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
+
 
 from .models import Portfolio, Trade, Holding
 from .serializers import PortfolioSerializer, TradeSerializer, PublicPortfolioSerializer
@@ -81,13 +83,13 @@ class PortfolioViewSet(viewsets.ModelViewSet):
         # Holdings rows
         for h in Holding.objects.filter(portfolio=portfolio):
             price = Decimal(str(get_latest_price(h.ticker)))
-            mv = Decimal(str(h.quantity)) * price  # signed
+            mv = Decimal(str(h.quantity)) * price
             total_exposure += abs(mv)
             items.append({
                 "ticker": h.ticker,
-                "value": float(mv),                          # signed
+                "value": float(mv),
                 "position": "short" if h.quantity < 0 else "long",
-                "change_pct": _today_change_pct(h.ticker),   # may be None
+                "change_pct": _today_change_pct(h.ticker),
                 "weight": 0.0,
             })
 
@@ -102,18 +104,24 @@ class PortfolioViewSet(viewsets.ModelViewSet):
         total_equity = portfolio_equity(portfolio)
         return Response({"total": float(total_equity), "data": items})
 
+class TenPerPage(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+
 
 class TradeViewSet(viewsets.ReadOnlyModelViewSet):
     throttle_scope = "trade"
     serializer_class = TradeSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    pagination_class = TenPerPage 
 
     def get_queryset(self):
         pid = self.kwargs.get("portfolio_pk")
         portfolio = get_object_or_404(Portfolio, pk=pid)
         if portfolio.visibility == "private" and portfolio.owner != self.request.user:
             return Trade.objects.none()
-        return portfolio.trades.all()
+        return portfolio.trades.order_by("-executed_at", "-id")
 
     @action(detail=False, methods=["post"], url_path="buy")
     def buy(self, request, portfolio_pk=None):
@@ -185,6 +193,7 @@ class PublicPortfolioListView(generics.ListAPIView):
     """
     serializer_class = PublicPortfolioSerializer
     permission_classes = [permissions.AllowAny]
+    pagination_class = TenPerPage  
 
     def get_queryset(self):
         return Portfolio.objects.filter(visibility="public").select_related("owner")
