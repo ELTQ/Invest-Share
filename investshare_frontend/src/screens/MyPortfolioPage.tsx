@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  useAllocations, useBuy, useCashIn, useChart, useDeletePortfolio,
+  useAllocations, useBuy, useCashIn, useCashOut, useChart, useDeletePortfolio,
   usePortfolio, useTrades, useCreatePortfolio, useSell
 } from "@/hooks/usePortfolios";
+import { fmt, toNum } from "@/lib/num";
 import { apiFetch } from "@/lib/api";
 import { LineValueChart } from "@/components/LineChart";
 import { AllocationTreemap } from "@/components/Treemap";
@@ -11,7 +12,6 @@ import { Tabs } from "@/components/Tabs";
 import { Button } from "@/components/Button";
 import { Input } from "@/components/Input";
 import { PLBadge } from "@/components/PLBadge";
-import { fmt, toNum } from "@/lib/num";
 import { me } from "@/hooks/useAuth";
 import { useQuery } from "@tanstack/react-query";
 import type { Portfolio } from "@/types";
@@ -61,12 +61,17 @@ export function MyPortfolioPage() {
   const buy = useBuy(pid ?? 0);
   const sell = useSell(pid ?? 0);
   const del = useDeletePortfolio(pid ?? 0);
+  const cashOut = useCashOut(pid ?? 0);
+
 
   // forms
-  const [cashAmt, setCashAmt] = useState("");
+
   const [ticker, setTicker] = useState("");
+  const [cashAmt, setCashAmt] = useState("");  
+  const [cashOutAmt, setCashOutAmt] = useState("");
   const [qty, setQty] = useState("");
   const [mode, setMode] = useState<"BUY" | "SELL">("BUY");
+  const currentCash = toNum(pf?.cash ?? 0);
 
   if (!meData) {
     return <div className="mx-auto max-w-6xl px-4 py-10">Loading…</div>;
@@ -122,6 +127,64 @@ export function MyPortfolioPage() {
           </div>
           {cashIn.error && <p className="text-danger-500 text-sm">Cash in failed.</p>}
         </div>
+        {/* Remove Cash */}
+          <div className="card p-4 space-y-3 w-full max-w-md">
+            <h3 className="font-medium">Remove Cash</h3>
+
+            <div className="flex gap-2">
+              <Input
+                placeholder={`Up to $${fmt(currentCash, 2)}`}
+                value={cashOutAmt}
+                onChange={(e) => setCashOutAmt(e.target.value)}
+              />
+              <Button
+                onClick={() =>
+                  cashOut.mutate(Number(cashOutAmt || 0), {
+                    onSuccess: () => setCashOutAmt(""),
+                  })
+                }
+                disabled={
+                  !cashOutAmt ||
+                  Number(cashOutAmt) <= 0 ||
+                  Number(cashOutAmt) > currentCash ||
+                  cashOut.isPending
+                }
+                loading={cashOut.isPending}
+                variant="danger"
+              >
+                Remove
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="danger"
+                onClick={() => {
+                  if (currentCash <= 0) return;
+                  if (confirm(`Remove ALL cash ($${fmt(currentCash, 2)})?`)) {
+                    cashOut.mutate(currentCash, {
+                      onSuccess: () => setCashOutAmt(""),
+                    });
+                  }
+                }}
+                disabled={currentCash <= 0 || cashOut.isPending}
+              >
+                Remove All
+              </Button>
+              <span className="text-xs text-text-muted">
+                You currently have ${fmt(currentCash, 2)} cash.
+              </span>
+            </div>
+
+            {Number(cashOutAmt) > currentCash && (
+              <p className="text-danger-500 text-xs">Amount exceeds available cash.</p>
+            )}
+            {cashOut.error && (
+              <p className="text-danger-500 text-sm">Cash out failed.</p>
+            )}
+          </div>
+
+
 
         {/* Trade (Buy/Sell) */}
         <div className="card p-4 space-y-3 w-full max-w-md">
@@ -264,4 +327,3 @@ export function MyPortfolioPage() {
     </div>
   );
 }
-
