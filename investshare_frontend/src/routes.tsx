@@ -6,7 +6,7 @@ import { RegisterPage } from "@/screens/RegisterPage";
 import { PublicPortfoliosPage } from "@/screens/PublicPortfoliosPage";
 import { PortfolioPage } from "@/screens/PortfolioPage";
 import { MyPortfolioPage } from "@/screens/MyPortfolioPage";
-
+import { LoggedOutOnly } from "@/components/RouteGuards";
 export const router = createBrowserRouter([
   {
     path: "/",
@@ -15,6 +15,7 @@ export const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: "login", element: <LoginPage /> },
       { path: "register", element: <RegisterPage /> },
+      { path: "/", element: <LoggedOutOnly><HomePage /></LoggedOutOnly> },
       { path: "public", element: <PublicPortfoliosPage /> },
       { path: "portfolio/:id", element: <PortfolioPage /> },
       { path: "my-portfolio", element: <MyPortfolioPage /> },
