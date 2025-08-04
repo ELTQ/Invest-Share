@@ -59,5 +59,11 @@ export interface TickerDetail {
 }
 
 export interface PortfolioChartPoint { date: string; value: number; }
-export interface AllocationItem { ticker: string; weight: number; value: number; }
-export interface AllocationResponse { total: number; data: AllocationItem[]; }
+export interface AllocationItem {
+  ticker: string;
+  weight: number | string;
+  value: number | string;         // signed
+  change_pct?: number | string | null;
+  position?: "long" | "short" | "cash";
+}
+export interface AllocationResponse { total: number | string; data: AllocationItem[]; }
