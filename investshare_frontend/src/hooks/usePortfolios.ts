@@ -1,15 +1,30 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, post, del } from "@/lib/api";
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { apiFetch, post } from "@/lib/api";
 import type {
   Portfolio, PublicPortfolioRow, AllocationResponse, Paginated, Trade, PortfolioChartPoint
 } from "@/types";
 
 type QOpts = { enabled?: boolean };
-
-export function usePublicPortfolios(page = 1) {
+export function usePublicPortfolios(page = 1, pageSize = 10) {
   return useQuery({
-    queryKey: ["public-portfolios", page],
-    queryFn: () => apiFetch<Paginated<PublicPortfolioRow>>(`/api/public-portfolios/?page=${page}`),
+    queryKey: ["public-portfolios", page, pageSize],
+    queryFn: () =>
+      apiFetch<Paginated<PublicPortfolioRow>>(
+        `/api/public-portfolios/?page=${page}&page_size=${pageSize}`
+      ),
+    placeholderData: (prev) => prev, // keep previous page visible while loading next
+  });
+}
+
+export function usePublicTrades(id: number, page = 1, opts: { enabled?: boolean } = {}, pageSize = 10) {
+  return useQuery({
+    queryKey: ["public-trades", id, page, pageSize],
+    queryFn: () =>
+      apiFetch<Paginated<Trade>>(
+        `/api/portfolios/${id}/trades/?page=${page}&page_size=${pageSize}`
+      ), // no { auth: true }
+    enabled: opts.enabled !== false,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -37,11 +52,17 @@ export function useChart(id: number, range: string, opts: QOpts = {}) {
   });
 }
 
-export function useTrades(id: number, page = 1, opts: QOpts = {}) {
+
+export function useTrades(id: number, page = 1, opts: QOpts = {}, pageSize = 10) {
   return useQuery({
-    queryKey: ["trades", id, page],
-    queryFn: () => apiFetch<Paginated<Trade>>(`/api/portfolios/${id}/trades/?page=${page}`),
+    queryKey: ["trades", id, page, pageSize],
+    queryFn: () =>
+      apiFetch<Paginated<Trade>>(
+        `/api/portfolios/${id}/trades/?page=${page}&page_size=${pageSize}`
+      ),
     enabled: opts.enabled !== false,
+
+    placeholderData: keepPreviousData,
   });
 }
 
