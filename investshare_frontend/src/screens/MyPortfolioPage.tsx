@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   useAllocations, useBuy, useCashIn, useChart, useDeletePortfolio,
-  usePortfolio, useTrades, useCreatePortfolio
+  usePortfolio, useTrades, useCreatePortfolio, useSell
 } from "@/hooks/usePortfolios";
 import { apiFetch } from "@/lib/api";
 import { LineValueChart } from "@/components/LineChart";
@@ -29,10 +29,10 @@ export function MyPortfolioPage() {
   const [pid, setPid] = useState<number | null>(null);
   const [range, setRange] = useState("all");
 
-  // 1) Who am I?
+  // who am I?
   const { data: meData } = useQuery({ queryKey: ["me"], queryFn: me });
 
-  // 2) Find my portfolio by username
+  // find my portfolio
   useEffect(() => {
     let cancelled = false;
     async function findMine() {
@@ -49,7 +49,7 @@ export function MyPortfolioPage() {
     return () => { cancelled = true; };
   }, [meData?.username]);
 
-  // If I don't have a portfolio, offer to create one
+  // init if missing
   const createPortfolio = useCreatePortfolio();
 
   const { data: pf } = usePortfolio(pid ?? 0, { enabled: pid != null });
@@ -59,11 +59,14 @@ export function MyPortfolioPage() {
 
   const cashIn = useCashIn(pid ?? 0);
   const buy = useBuy(pid ?? 0);
+  const sell = useSell(pid ?? 0);
   const del = useDeletePortfolio(pid ?? 0);
 
+  // forms
   const [cashAmt, setCashAmt] = useState("");
-  const [buyTicker, setBuyTicker] = useState("");
-  const [buyQty, setBuyQty] = useState("");
+  const [ticker, setTicker] = useState("");
+  const [qty, setQty] = useState("");
+  const [mode, setMode] = useState<"BUY" | "SELL">("BUY");
 
   if (!meData) {
     return <div className="mx-auto max-w-6xl px-4 py-10">Loading…</div>;
@@ -79,9 +82,7 @@ export function MyPortfolioPage() {
             onClick={() => {
               createPortfolio.mutate(
                 { name: "My Portfolio", visibility: "public" },
-                {
-                  onSuccess: (p) => setPid((p as any).id),
-                }
+                { onSuccess: (p) => setPid((p as any).id) }
               );
             }}
             loading={createPortfolio.isPending}
@@ -94,6 +95,9 @@ export function MyPortfolioPage() {
     );
   }
 
+  const tradePending = buy.isPending || sell.isPending;
+  const tradeError = buy.error || sell.error;
+
   return (
     <div className="space-y-6">
       <header className="space-y-3">
@@ -103,6 +107,7 @@ export function MyPortfolioPage() {
       </header>
 
       <div className="flex flex-wrap gap-3">
+        {/* Add Cash */}
         <div className="card p-4 space-y-3 w-full max-w-md">
           <h3 className="font-medium">Add Cash</h3>
           <div className="flex gap-2">
@@ -118,36 +123,77 @@ export function MyPortfolioPage() {
           {cashIn.error && <p className="text-danger-500 text-sm">Cash in failed.</p>}
         </div>
 
+        {/* Trade (Buy/Sell) */}
         <div className="card p-4 space-y-3 w-full max-w-md">
-          <h3 className="font-medium">Buy (market price)</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="font-medium">Trade (market price)</h3>
+            <div className="inline-flex rounded-lg border border-stroke-soft p-1 bg-bg-surface">
+              <button
+                className={`px-3 py-1.5 text-sm rounded-md ${mode === "BUY" ? "bg-brand text-white" : "hover:bg-white"}`}
+                onClick={() => setMode("BUY")}
+                type="button"
+              >
+                Buy
+              </button>
+              <button
+                className={`px-3 py-1.5 text-sm rounded-md ${mode === "SELL" ? "bg-brand text-white" : "hover:bg-white"}`}
+                onClick={() => setMode("SELL")}
+                type="button"
+              >
+                Sell
+              </button>
+            </div>
+          </div>
           <div className="flex gap-2">
-            <Input placeholder="Ticker" value={buyTicker} onChange={(e) => setBuyTicker(e.target.value.toUpperCase())} />
-            <Input placeholder="Qty" value={buyQty} onChange={(e) => setBuyQty(e.target.value)} />
+            <Input
+              placeholder="Ticker"
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            />
+            <Input
+              placeholder="Qty"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+            />
             <Button
-              onClick={() =>
-                buy.mutate(
-                  { ticker: buyTicker, quantity: Number(buyQty) },
-                  { onSuccess: () => { setBuyTicker(""); setBuyQty(""); } }
-                )
-              }
-              disabled={!buyTicker || !buyQty}
-              loading={buy.isPending}
+              onClick={() => {
+                const quantity = Number(qty);
+                if (!ticker || !quantity || quantity <= 0) return;
+                const onSuccess = () => { setTicker(""); setQty(""); };
+                if (mode === "BUY") {
+                  buy.mutate({ ticker, quantity }, { onSuccess });
+                } else {
+                  sell.mutate({ ticker, quantity }, { onSuccess });
+                }
+              }}
+              disabled={!ticker || !qty || Number(qty) <= 0}
+              loading={tradePending}
             >
-              Buy
+              Trade
             </Button>
           </div>
-          {buy.error && <p className="text-danger-500 text-sm">Buy failed.</p>}
+          {tradeError && (
+            <p className="text-danger-500 text-sm">
+              {mode === "BUY" ? "Buy" : "Sell"} failed.
+            </p>
+          )}
+          <p className="text-xs text-text-muted">
+            Executes at current market price. Manual price entry is disabled.
+          </p>
         </div>
 
-        <div className="flex-1"></div>
+        <div className="flex-1" />
 
+        {/* Danger zone */}
         <div className="card p-4 space-y-3 w-full max-w-md">
           <h3 className="font-medium text-danger-500">Danger zone</h3>
           <Button variant="danger" onClick={() => {
             if (confirm("Delete portfolio? This cannot be undone.")) {
               del.mutate(undefined, { onSuccess: () => { setPid(null); nav("/public"); } });
             }
-          }}>Delete portfolio</Button>
+          }}>
+            Delete portfolio
+          </Button>
         </div>
       </div>
 
@@ -218,3 +264,4 @@ export function MyPortfolioPage() {
     </div>
   );
 }
+
