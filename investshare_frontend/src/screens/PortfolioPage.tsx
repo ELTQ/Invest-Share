@@ -55,7 +55,7 @@ export function PortfolioPage() {
       <LineValueChart data={chart} />
 
       <h3 className="text-lg font-medium">Allocation</h3>
-      <AllocationTreemap data={alloc?.data} />
+      <AllocationTreemap data={alloc?.data ?? []} metrics={pf?.holdings ?? []} />
 
       <h3 className="text-lg font-medium">Positions</h3>
       <div className="card overflow-auto">
