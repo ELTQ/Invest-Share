@@ -3,11 +3,18 @@ export interface Holding {
   ticker: string;
   quantity: number | string;   // was number
   avg_cost: number | string;   // was number
+
+  value?: number | string | null;
+  pl_abs?: number | string | null;
+  pl_pct?: number | string | null;
+  day_abs?: number | string | null;
+  day_pct?: number | string | null;
 }
 
+
 export interface Change {
-  abs: number | string | null; // was number | null
-  pct: number | string | null; // was number | null
+  abs: number | string | null;
+  pct: number | string | null;
 }
 
 export interface Portfolio {
@@ -16,7 +23,7 @@ export interface Portfolio {
   visibility: "public" | "private";
   cash: number | string;
   owner_username: string;
-  total_value: number | string;        // was number
+  total_value: number | string;
   todays_change: Change;
   holdings: Holding[];
   created_at: string;
