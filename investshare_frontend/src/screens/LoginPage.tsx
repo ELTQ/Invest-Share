@@ -1,38 +1,87 @@
+// src/screens/LoginPage.tsx
 import { useState } from "react";
-import { Input } from "@/components/Input";
-import { Button } from "@/components/Button";
-import { login } from "@/hooks/useAuth";
 import { useNavigate, Link } from "react-router-dom";
+import { login } from "@/hooks/useAuth";
+import { Button } from "@/components/Button";
+import { Input } from "@/components/Input";
 
-export function LoginPage() {
+export default function LoginPage() {
   const nav = useNavigate();
-  const [username, setU] = useState("");
-  const [password, setP] = useState("");
-  const [err, setErr] = useState("");
 
-  async function onSubmit(e: React.FormEvent) {
+  // login form
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onLogin(e: React.FormEvent) {
     e.preventDefault();
-    setErr("");
+    setErr(null);
+    setLoading(true);
     try {
-      await login(username, password);
-      nav("/my-portfolio");
-    } catch (e: any) {
-      setErr("Invalid credentials.");
+      const me = await login(username.trim(), password);
+      // On success, go to public portfolios (as requested)
+      nav("/public");
+    } catch {
+      setErr("Invalid credentials. Please try again.");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <div className="mx-auto max-w-sm space-y-6">
-      <h2 className="text-2xl font-semibold">Log in</h2>
-      <form className="space-y-4" onSubmit={onSubmit}>
-        <Input placeholder="Username" value={username} onChange={(e) => setU(e.target.value)} />
-        <Input placeholder="Password" type="password" value={password} onChange={(e) => setP(e.target.value)} />
-        {err && <p className="text-danger-500 text-sm">{err}</p>}
-        <Button type="submit" className="w-full">Continue</Button>
-      </form>
-      <p className="text-sm text-text-muted">
-        New here? <Link to="/register" className="text-brand">Create an account</Link>
-      </p>
+    <div className="mx-auto max-w-md w-full space-y-6">
+      <div className="text-center space-y-2">
+        <h1 className="text-2xl font-semibold">Invest Share</h1>
+        <p className="text-text-muted text-sm">Sign in or continue as guest</p>
+      </div>
+
+      <div className="card p-4 space-y-3">
+        {/* Login only */}
+        <form className="space-y-3" onSubmit={onLogin}>
+          <Input
+            placeholder="Username"
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+          <Input
+            placeholder="Password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <Button type="submit" loading={loading} disabled={!username || !password}>
+            Log in
+          </Button>
+          {err && <p className="text-danger-500 text-sm">{err}</p>}
+        </form>
+
+        {/* Link to register page */}
+        <div className="text-sm text-center">
+          Don’t have an account?{" "}
+          <Link to="/register" className="text-brand hover:underline">
+            Create one
+          </Link>
+        </div>
+
+        {/* Guest */}
+        <div className="pt-2 border-t border-stroke-soft">
+          <Button variant="ghost" onClick={() => nav("/public")}>
+            Continue as guest
+          </Button>
+        </div>
+
+        <p className="text-[11px] text-text-muted">
+          Disclaimer: Not financial advice / not for profit.
+        </p>
+      </div>
+
+      <div className="text-center text-xs text-text-muted">
+        By using this site you agree to the Terms and acknowledge the Disclaimer.
+      </div>
     </div>
   );
 }
