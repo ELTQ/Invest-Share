@@ -101,31 +101,32 @@ class PortfolioSerializer(serializers.ModelSerializer):
     def get_holdings(self, obj: Portfolio):
         rows = []
         for h in obj.holdings.all():
-            qty   = _dec(h.quantity)  or Decimal("0")
-            avg   = _dec(h.avg_cost)  or Decimal("0")
-            price, _prev, openp = _live_prev_open(h.ticker)
+            q     = _dec(h.quantity) or Decimal("0")
+            avg   = _dec(h.avg_cost) or Decimal("0")
+            price, _prev, openp = _live_prev_open(h.ticker)   # ← already live/after-hours aware
 
             value = pl_abs = pl_pct = day_abs = day_pct = None
             if price is not None:
-                value = qty * price
+                value = q * price
                 if avg:
-                    pl_abs = qty * (price - avg)
+                    pl_abs = q * (price - avg)
                     pl_pct = (price - avg) / avg * Decimal("100")
                 if openp:
-                    day_abs = qty * (price - openp)
+                    day_abs = q * (price - openp)
                     day_pct = (price - openp) / openp * Decimal("100")
 
             rows.append(
                 {
-                    "id":       h.id,
-                    "ticker":   h.ticker,
-                    "quantity": str(h.quantity),
-                    "avg_cost": str(h.avg_cost),
-                    "value":    float(value)   if value   is not None else None,
-                    "pl_abs":   float(pl_abs)  if pl_abs  is not None else None,
-                    "pl_pct":   float(pl_pct)  if pl_pct  is not None else None,
-                    "day_abs":  float(day_abs) if day_abs is not None else None,
-                    "day_pct":  float(day_pct) if day_pct is not None else None,
+                    "id":        h.id,
+                    "ticker":    h.ticker,
+                    "quantity":  str(h.quantity),
+                    "avg_cost":  str(h.avg_cost),
+                    "price":     float(price) if price is not None else None,   # ← NEW
+                    "value":     float(value)   if value   is not None else None,
+                    "pl_abs":    float(pl_abs)  if pl_abs  is not None else None,
+                    "pl_pct":    float(pl_pct)  if pl_pct  is not None else None,
+                    "day_abs":   float(day_abs) if day_abs is not None else None,
+                    "day_pct":   float(day_pct) if day_pct is not None else None,
                 }
             )
         return rows
@@ -160,7 +161,6 @@ class PortfolioSerializer(serializers.ModelSerializer):
         pct  = diff / open_val * Decimal("100")
         return {"abs": float(diff), "pct": float(pct)}
 
-
 class PublicPortfolioSerializer(serializers.ModelSerializer):
     owner_username = serializers.CharField(source="owner.username", read_only=True)
     total_value    = serializers.SerializerMethodField()
@@ -170,12 +170,24 @@ class PublicPortfolioSerializer(serializers.ModelSerializer):
         model  = Portfolio
         fields = ["id", "owner_username", "total_value", "todays_change"]
 
+    # simple per-request cache to avoid duplicate yfinance calls per ticker
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._quote_cache: Dict[str, Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]] = {}
+
+    def _quote(self, symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
+        if symbol not in self._quote_cache:
+            self._quote_cache[symbol] = _live_prev_open(symbol)
+        return self._quote_cache[symbol]
+
     def get_total_value(self, obj: Portfolio) -> float:
         tot = _dec(obj.cash) or Decimal("0")
+        # use the same live price source as todays_change for consistency
         for h in obj.holdings.all():
             qty = _dec(h.quantity) or Decimal("0")
-            px  = _dec(get_latest_price(h.ticker)) or Decimal("0")
-            tot += qty * px
+            price, _, _ = self._quote(h.ticker)
+            if price:
+                tot += qty * price
         return float(tot)
 
     def get_todays_change(self, obj: Portfolio):
@@ -184,7 +196,7 @@ class PublicPortfolioSerializer(serializers.ModelSerializer):
 
         for h in obj.holdings.all():
             qty = _dec(h.quantity) or Decimal("0")
-            price, _prev, openp = _live_prev_open(h.ticker)
+            price, _prev, openp = self._quote(h.ticker)
             if price:
                 now_val += qty * price
             if openp:
@@ -194,5 +206,5 @@ class PublicPortfolioSerializer(serializers.ModelSerializer):
             return {"abs": 0.0, "pct": 0.0}
 
         diff = now_val - open_val
-        pct  = diff / open_val * Decimal("100")
+        pct  = (diff / open_val) * Decimal("100")
         return {"abs": float(diff), "pct": float(pct)}
