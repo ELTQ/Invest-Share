@@ -1,8 +1,17 @@
-import { useEffect, useState } from "react";
+// src/screens/MyPortfolioPage.tsx
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  useAllocations, useBuy, useCashIn, useCashOut, useChart, useDeletePortfolio,
-  usePortfolio, useTrades, useCreatePortfolio, useSell
+  useAllocations,
+  useBuy,
+  useCashIn,
+  useCashOut,
+  useChart,
+  useDeletePortfolio,
+  usePortfolio,
+  useTrades,
+  useCreatePortfolio,
+  useSell,
 } from "@/hooks/usePortfolios";
 import { fmt, toNum } from "@/lib/num";
 import { apiFetch } from "@/lib/api";
@@ -25,31 +34,38 @@ const rangeTabs = [
   { key: "all", label: "All" },
 ];
 
+// very basic whitelist: letters/numbers/dot/dash only, 1–20 chars
+const TICKER_RE = /^[A-Z0-9.\-]{1,20}$/;
+
 export function MyPortfolioPage() {
   const nav = useNavigate();
   const [pid, setPid] = useState<number | null>(null);
   const [range, setRange] = useState("all");
-  const [tradePage, setTradePage] = useState(1); // pagination
+  const [tradePage, setTradePage] = useState(1);
 
   // who am I?
   const { data: meData } = useQuery({ queryKey: ["me"], queryFn: me });
 
-  // find my portfolio (auth required)
-  useEffect(() => {
-    let cancelled = false;
-    async function findMine() {
+  // fetch *my* portfolio directly (fast + avoids flicker)
+  const mineQ = useQuery({
+    queryKey: ["my-portfolio"],
+    enabled: !!meData?.username, // wait for auth known
+    retry: false,
+    queryFn: async () => {
       try {
-        const res = await apiFetch<any>("/api/portfolios/", { auth: true });
-        const list: Portfolio[] = Array.isArray(res) ? res : res.results;
-        const mine = list?.find((p: any) => p.owner_username === meData?.username);
-        if (!cancelled) setPid(mine?.id ?? null);
-      } catch {
-        if (!cancelled) setPid(null);
+        return await apiFetch<Portfolio>("/api/portfolios/mine/", { auth: true });
+      } catch (e: any) {
+        // propagate HTTP status so we can differentiate 404 vs others
+        e.status = e?.status ?? e?.response?.status ?? 0;
+        throw e;
       }
-    }
-    if (meData?.username) findMine();
-    return () => { cancelled = true; };
-  }, [meData?.username]);
+    },
+  });
+
+  // set local pid when data arrives (kept for hooks & deletes)
+  useEffect(() => {
+    if (mineQ.data?.id) setPid(mineQ.data.id);
+  }, [mineQ.data?.id]);
 
   // reset pagination when portfolio changes
   useEffect(() => {
@@ -59,17 +75,16 @@ export function MyPortfolioPage() {
   // init if missing
   const createPortfolio = useCreatePortfolio();
 
-  // data queries (guarded until we have pid)
+  // data queries (guarded)
   const { data: pf } = usePortfolio(pid ?? 0, { enabled: pid != null });
   const { data: alloc } = useAllocations(pid ?? 0, { enabled: pid != null });
   const { data: chart } = useChart(pid ?? 0, range, { enabled: pid != null });
-
-  // trades with pagination (10/page by default in hook)
   const { data: trades, isFetching } = useTrades(pid ?? 0, tradePage, { enabled: pid != null });
-  const totalTrades = trades?.count ?? 0;
+
   const pageSize = 10;
+  const totalTrades = trades?.count ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalTrades / pageSize));
-  const tradeRows = trades?.results ?? [];
+  const tradeRows = useMemo(() => trades?.results ?? [], [trades?.results]);
 
   // mutations
   const cashIn = useCashIn(pid ?? 0);
@@ -78,7 +93,7 @@ export function MyPortfolioPage() {
   const sell = useSell(pid ?? 0);
   const del = useDeletePortfolio(pid ?? 0);
 
-  // forms
+  // trade form
   const [ticker, setTicker] = useState("");
   const [cashAmt, setCashAmt] = useState("");
   const [cashOutAmt, setCashOutAmt] = useState("");
@@ -86,11 +101,15 @@ export function MyPortfolioPage() {
   const [mode, setMode] = useState<"BUY" | "SELL">("BUY");
   const currentCash = toNum(pf?.cash ?? 0);
 
-  if (!meData) {
+  // block rendering until we know auth + whether user has a portfolio
+  if (!meData || mineQ.isLoading) {
     return <div className="mx-auto max-w-6xl px-4 py-10">Loading…</div>;
   }
 
-  if (pid == null) {
+  const noPortfolio = mineQ.isError && (mineQ as any).error?.status === 404;
+
+  // Create portfolio screen (only after confirmed 404)
+  if (noPortfolio && pid == null) {
     return (
       <div className="mx-auto max-w-3xl space-y-6">
         <h2 className="text-2xl font-semibold">Create your portfolio</h2>
@@ -100,14 +119,21 @@ export function MyPortfolioPage() {
             onClick={() => {
               createPortfolio.mutate(
                 { name: "My Portfolio", visibility: "public" },
-                { onSuccess: (p) => setPid((p as any).id) }
+                {
+                  onSuccess: (p) => {
+                    const id = (p as any)?.id;
+                    if (id) setPid(id);
+                  },
+                }
               );
             }}
             loading={createPortfolio.isPending}
           >
             Initialize portfolio
           </Button>
-          {createPortfolio.error && <p className="text-danger-500 text-sm">Could not create portfolio.</p>}
+          {createPortfolio.error && (
+            <p className="text-danger-500 text-sm">Could not create portfolio.</p>
+          )}
         </div>
       </div>
     );
@@ -116,12 +142,23 @@ export function MyPortfolioPage() {
   const tradePending = buy.isPending || sell.isPending;
   const tradeError = buy.error || sell.error;
 
+  // derived validity
+  const cleanedTicker = ticker.toUpperCase().trim();
+  const qtyNum = Number(qty);
+  const tickerValid = TICKER_RE.test(cleanedTicker);
+  const qtyValid = Number.isFinite(qtyNum) && qtyNum > 0;
+
+  const tradeDisabled = !tickerValid || !qtyValid || tradePending || pid == null;
+
   return (
     <div className="space-y-6">
       <header className="space-y-3">
         <div className="text-sm text-text-muted">My Portfolio</div>
         <h1 className="text-3xl font-semibold tnum">${fmt(toNum(pf?.total_value ?? 0), 2)}</h1>
-        <PLBadge abs={toNum(pf?.todays_change?.abs ?? 0)} pct={toNum(pf?.todays_change?.pct ?? 0)} />
+        <PLBadge
+          abs={toNum(pf?.todays_change?.abs ?? 0)}
+          pct={toNum(pf?.todays_change?.pct ?? 0)}
+        />
       </header>
 
       <div className="flex flex-wrap gap-3">
@@ -129,12 +166,22 @@ export function MyPortfolioPage() {
         <div className="card p-4 space-y-3 w-full max-w-md">
           <h3 className="font-medium">Add Cash</h3>
           <div className="flex gap-2">
-            <Input placeholder="Amount" value={cashAmt} onChange={(e) => setCashAmt(e.target.value)} />
+            <Input
+              placeholder="Amount"
+              inputMode="decimal"
+              value={cashAmt}
+              onChange={(e) => setCashAmt(e.target.value)}
+            />
             <Button
-              onClick={() => cashIn.mutate(Number(cashAmt || 0), {
-                onSuccess: () => { setCashAmt(""); setTradePage(1); }
-              })}
-              disabled={!cashAmt}
+              onClick={() =>
+                cashIn.mutate(Number(cashAmt || 0), {
+                  onSuccess: () => {
+                    setCashAmt("");
+                    setTradePage(1);
+                  },
+                })
+              }
+              disabled={!cashAmt || Number(cashAmt) <= 0 || cashIn.isPending || pid == null}
               loading={cashIn.isPending}
             >
               Add
@@ -150,20 +197,25 @@ export function MyPortfolioPage() {
           <div className="flex gap-2">
             <Input
               placeholder={`Up to $${fmt(currentCash, 2)}`}
+              inputMode="decimal"
               value={cashOutAmt}
               onChange={(e) => setCashOutAmt(e.target.value)}
             />
             <Button
               onClick={() =>
                 cashOut.mutate(Number(cashOutAmt || 0), {
-                  onSuccess: () => { setCashOutAmt(""); setTradePage(1); }
+                  onSuccess: () => {
+                    setCashOutAmt("");
+                    setTradePage(1);
+                  },
                 })
               }
               disabled={
                 !cashOutAmt ||
                 Number(cashOutAmt) <= 0 ||
                 Number(cashOutAmt) > currentCash ||
-                cashOut.isPending
+                cashOut.isPending ||
+                pid == null
               }
               loading={cashOut.isPending}
               variant="danger"
@@ -179,11 +231,14 @@ export function MyPortfolioPage() {
                 if (currentCash <= 0) return;
                 if (confirm(`Remove ALL cash ($${fmt(currentCash, 2)})?`)) {
                   cashOut.mutate(currentCash, {
-                    onSuccess: () => { setCashOutAmt(""); setTradePage(1); }
+                    onSuccess: () => {
+                      setCashOutAmt("");
+                      setTradePage(1);
+                    },
                   });
                 }
               }}
-              disabled={currentCash <= 0 || cashOut.isPending}
+              disabled={currentCash <= 0 || cashOut.isPending || pid == null}
             >
               Remove All
             </Button>
@@ -204,14 +259,18 @@ export function MyPortfolioPage() {
             <h3 className="font-medium">Trade (market price)</h3>
             <div className="inline-flex rounded-lg border border-stroke-soft p-1 bg-bg-surface">
               <button
-                className={`px-3 py-1.5 text-sm rounded-md ${mode === "BUY" ? "bg-brand text-white" : "hover:bg-white"}`}
+                className={`px-3 py-1.5 text-sm rounded-md ${
+                  mode === "BUY" ? "bg-brand text-white" : "hover:bg-white"
+                }`}
                 onClick={() => setMode("BUY")}
                 type="button"
               >
                 Buy
               </button>
               <button
-                className={`px-3 py-1.5 text-sm rounded-md ${mode === "SELL" ? "bg-brand text-white" : "hover:bg-white"}`}
+                className={`px-3 py-1.5 text-sm rounded-md ${
+                  mode === "SELL" ? "bg-brand text-white" : "hover:bg-white"
+                }`}
                 onClick={() => setMode("SELL")}
                 type="button"
               >
@@ -227,33 +286,42 @@ export function MyPortfolioPage() {
             />
             <Input
               placeholder="Qty"
+              inputMode="decimal"
               value={qty}
               onChange={(e) => setQty(e.target.value)}
             />
             <Button
               onClick={() => {
-                const quantity = Number(qty);
-                if (!ticker || !quantity || quantity <= 0) return;
-                const onSuccess = () => { setTicker(""); setQty(""); setTradePage(1); };
-                if (mode === "BUY") {
-                  buy.mutate({ ticker, quantity }, { onSuccess });
-                } else {
-                  sell.mutate({ ticker, quantity }, { onSuccess });
-                }
+                if (tradeDisabled) return;
+                const onSuccess = () => {
+                  setTicker("");
+                  setQty("");
+                  setTradePage(1);
+                };
+                const payload = { ticker: cleanedTicker, quantity: qtyNum };
+                if (mode === "BUY") buy.mutate(payload, { onSuccess });
+                else sell.mutate(payload, { onSuccess });
               }}
-              disabled={!ticker || !qty || Number(qty) <= 0}
+              disabled={tradeDisabled}
               loading={tradePending}
             >
               Trade
             </Button>
           </div>
+          {!tickerValid && ticker.length > 0 && (
+            <p className="text-warning-600 text-xs">Ticker looks invalid.</p>
+          )}
+          {!qtyValid && qty.length > 0 && (
+            <p className="text-warning-600 text-xs">Quantity must be a positive number.</p>
+          )}
           {tradeError && (
             <p className="text-danger-500 text-sm">
               {mode === "BUY" ? "Buy" : "Sell"} failed.
             </p>
           )}
           <p className="text-xs text-text-muted">
-            Executes at current market price. Manual price entry is disabled.
+            Executes at current market price (incl. after-hours when available). Manual price entry
+            is disabled.
           </p>
         </div>
 
@@ -262,11 +330,21 @@ export function MyPortfolioPage() {
         {/* Danger zone */}
         <div className="card p-4 space-y-3 w-full max-w-md">
           <h3 className="font-medium text-danger-500">Danger zone</h3>
-          <Button variant="danger" onClick={() => {
-            if (confirm("Delete portfolio? This cannot be undone.")) {
-              del.mutate(undefined, { onSuccess: () => { setPid(null); nav("/public"); } });
-            }
-          }}>
+          <Button
+            variant="danger"
+            onClick={() => {
+              if (confirm("Delete portfolio? This cannot be undone.")) {
+                del.mutate(undefined, {
+                  onSuccess: () => {
+                    setPid(null);
+                    nav("/public");
+                  },
+                });
+              }
+            }}
+            disabled={del.isPending || pid == null}
+            loading={del.isPending}
+          >
             Delete portfolio
           </Button>
         </div>
@@ -296,22 +374,40 @@ export function MyPortfolioPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-stroke-soft">
-            {pf?.holdings?.map((h) => (
+            {pf?.holdings?.map((h: any) => (
               <tr key={h.id}>
                 <td className="px-4 py-3">{h.ticker}</td>
                 <td className="px-4 py-3 tnum">{fmt(toNum(h.quantity), 4)}</td>
                 <td className="px-4 py-3 tnum">${fmt(toNum(h.avg_cost), 4)}</td>
-                <td className="px-4 py-3 tnum">{h.value != null ? `$${fmt(toNum(h.value), 2)}` : "-"}</td>
-                <td className={`px-4 py-3 tnum ${toNum(h.pl_abs) >= 0 ? "text-success-600" : "text-danger-600"}`}>
-                  {h.pl_abs != null ? `${toNum(h.pl_abs) >= 0 ? "+" : ""}$${fmt(toNum(h.pl_abs), 2)}` : "-"}
+                <td className="px-4 py-3 tnum">
+                  {h.value != null ? `$${fmt(toNum(h.value), 2)}` : "-"}
                 </td>
-                <td className={`px-4 py-3 tnum ${toNum(h.pl_pct) >= 0 ? "text-success-600" : "text-danger-600"}`}>
-                  {h.pl_pct != null ? `${toNum(h.pl_pct) >= 0 ? "+" : ""}${fmt(toNum(h.pl_pct), 2)}%` : "-"}
+                <td
+                  className={`px-4 py-3 tnum ${
+                    toNum(h.pl_abs) >= 0 ? "text-success-600" : "text-danger-600"
+                  }`}
+                >
+                  {h.pl_abs != null
+                    ? `${toNum(h.pl_abs) >= 0 ? "+" : ""}$${fmt(toNum(h.pl_abs), 2)}`
+                    : "-"}
+                </td>
+                <td
+                  className={`px-4 py-3 tnum ${
+                    toNum(h.pl_pct) >= 0 ? "text-success-600" : "text-danger-600"
+                  }`}
+                >
+                  {h.pl_pct != null
+                    ? `${toNum(h.pl_pct) >= 0 ? "+" : ""}${fmt(toNum(h.pl_pct), 2)}%`
+                    : "-"}
                 </td>
               </tr>
             ))}
             {(!pf?.holdings || pf.holdings.length === 0) && (
-              <tr><td className="px-4 py-6 text-text-muted" colSpan={6}>No positions.</td></tr>
+              <tr>
+                <td className="px-4 py-6 text-text-muted" colSpan={6}>
+                  No positions.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
@@ -320,10 +416,10 @@ export function MyPortfolioPage() {
       {/* Trades */}
       <h3 className="text-lg font-medium">Trades</h3>
 
-      {/* Pagination header: Page X of Y + numeric buttons + "Go to" */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-2">
         <div className="text-sm">
-          Page <span className="tnum">{tradePage}</span> of <span className="tnum">{totalPages}</span>
+          Page <span className="tnum">{tradePage}</span> of{" "}
+          <span className="tnum">{totalPages}</span>
         </div>
 
         <Pagination
@@ -365,18 +461,28 @@ export function MyPortfolioPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-stroke-soft">
-            {tradeRows.map(t => (
+            {(tradeRows || []).map((t: any) => (
               <tr key={t.id}>
-                <td className="px-4 py-3">{new Date(t.executed_at).toLocaleString()}</td>
+                <td className="px-4 py-3">
+                  {t.executed_at ? new Date(t.executed_at).toLocaleString() : "-"}
+                </td>
                 <td className="px-4 py-3">{t.type}</td>
                 <td className="px-4 py-3">{t.ticker || "-"}</td>
                 <td className="px-4 py-3 tnum">{fmt(toNum(t.quantity), 4)}</td>
-                <td className="px-4 py-3 tnum">{t.price ? `$${fmt(toNum(t.price), 4)}` : "-"}</td>
-                <td className="px-4 py-3 tnum">{toNum(t.cash_delta) >= 0 ? "+" : ""}${fmt(toNum(t.cash_delta), 2)}</td>
+                <td className="px-4 py-3 tnum">
+                  {t.price ? `$${fmt(toNum(t.price), 4)}` : "-"}
+                </td>
+                <td className="px-4 py-3 tnum">
+                  {toNum(t.cash_delta) >= 0 ? "+" : ""}${fmt(toNum(t.cash_delta), 2)}
+                </td>
               </tr>
             ))}
-            {tradeRows.length === 0 && (
-              <tr><td className="px-4 py-6 text-text-muted" colSpan={6}>No trades.</td></tr>
+            {(!tradeRows || tradeRows.length === 0) && (
+              <tr>
+                <td className="px-4 py-6 text-text-muted" colSpan={6}>
+                  No trades.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
