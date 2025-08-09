@@ -1,48 +1,121 @@
-import { API_URL } from "@/config";
-const BASE = API_URL;
+// src/lib/api.ts
+// Central API helpers — guest-friendly + safer errors
 
-import { auth } from "@/state/auth";
+export const API_URL: string =
+  (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
 
-async function refreshToken(): Promise<boolean> {
-  const r = auth.refresh;
-  if (!r) return false;
-  const res = await fetch(`${BASE}/auth/refresh/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh: r }),
-  });
-  if (!res.ok) return false;
-  const data = await res.json();
-  if (!data.access) return false;
-  auth.set({ access: data.access, refresh: r });
-  return true;
+const DEFAULT_TIMEOUT_MS = 15000;
+
+export function getAccessToken(): string | null {
+  try {
+    return localStorage.getItem("access");
+  } catch {
+    return null; // SSR / blocked storage
+  }
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...(init.headers as any) };
-  if (auth.access) headers.Authorization = `Bearer ${auth.access}`;
+export function authHeaders(extra?: Record<string, string>) {
+  const token = getAccessToken();
+  const base: Record<string, string> = { Accept: "application/json" };
+  if (token) base.Authorization = `Bearer ${token}`;
+  return { ...base, ...(extra || {}) };
+}
 
-  let res = await fetch(`${BASE}${path}`, { ...init, headers });
-  if (res.status === 401 && await refreshToken()) {
-    headers.Authorization = `Bearer ${auth.access}`;
-    res = await fetch(`${BASE}${path}`, { ...init, headers });
+type FetchOpts = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  body?: any;
+  auth?: boolean;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  withCredentials?: boolean; // opt-in cookies if your backend uses sessions
+};
+
+class ApiError extends Error {
+  status: number;
+  body: any;
+  constructor(status: number, body: any) {
+    super(typeof body === "string" ? body : `http_${status}`);
+    this.status = status;
+    this.body = body;
   }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
-  }
+}
+
+function joinUrl(base: string, path: string) {
+  if (path.startsWith("http")) return path;
+  const slash = base.endsWith("/") || path.startsWith("/") ? "" : "/";
+  return `${base.replace(/\/+$/, "")}${slash}${path.replace(/^\/+/, "/")}`;
+}
+
+async function parseMaybeJson(res: Response) {
   const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return res.json() as Promise<T>;
-  // @ts-ignore
-  return undefined;
+  if (ct.includes("application/json")) {
+    try {
+      return await res.json();
+    } catch {
+      /* fall back to text */
+    }
+  }
+  return await res.text();
 }
 
-export function post<T>(path: string, body?: any) {
-  return apiFetch<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+async function _fetch<T>(path: string, opts: FetchOpts = {}, allow401 = false): Promise<T> {
+  const url = joinUrl(API_URL, path);
+  const hasBody = opts.body !== undefined && opts.body !== null;
+
+  // Build headers per-request
+  const headers: Record<string, string> = opts.auth
+    ? authHeaders(opts.headers)
+    : { Accept: "application/json", ...(opts.headers || {}) };
+  if (hasBody && !("Content-Type" in headers)) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method || "GET",
+      headers,
+      body: hasBody ? JSON.stringify(opts.body) : undefined,
+      credentials: opts.withCredentials ? "include" : "omit", // default: no cookies
+      signal: ac.signal,
+    });
+  } catch (e: any) {
+    clearTimeout(timeout);
+    throw new ApiError(0, e?.message || "network_error");
+  }
+  clearTimeout(timeout);
+
+  if (res.status === 204) return undefined as unknown as T;
+  if (allow401 && res.status === 401) return null as unknown as T;
+
+  if (!res.ok) {
+    const body = await parseMaybeJson(res);
+    throw new ApiError(res.status, body);
+  }
+
+  return (await parseMaybeJson(res)) as T;
 }
-export function patch<T>(path: string, body?: any) {
-  return apiFetch<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined });
+
+// Public helpers
+export async function apiFetch<T = any>(path: string, opts: FetchOpts = {}): Promise<T> {
+  return _fetch<T>(path, opts, false);
 }
-export function del<T>(path: string) {
-  return apiFetch<T>(path, { method: "DELETE" });
+
+export async function apiFetchAllow401<T = any>(path: string, opts: FetchOpts = {}): Promise<T | null> {
+  return _fetch<T | null>(path, opts, true);
+}
+
+export function get<T = any>(path: string, opts?: Omit<FetchOpts, "method" | "body">) {
+  return apiFetch<T>(path, { ...opts, method: "GET" });
+}
+
+export function post<T = any>(path: string, body?: any, opts?: Omit<FetchOpts, "method">) {
+  return apiFetch<T>(path, { ...opts, method: "POST", body, auth: true });
+}
+
+export function del<T = any>(path: string, opts?: Omit<FetchOpts, "method" | "body">) {
+  return apiFetch<T>(path, { ...opts, method: "DELETE", auth: true });
 }
