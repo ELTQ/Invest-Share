@@ -3,6 +3,7 @@ export interface Holding {
   ticker: string;
   quantity: number | string;   // was number
   avg_cost: number | string;   // was number
+  price?: number | string | null;
 
   value?: number | string | null;
   pl_abs?: number | string | null;
