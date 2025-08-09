@@ -34,7 +34,7 @@ const rangeTabs = [
   { key: "all", label: "All" },
 ];
 
-// very basic whitelist: letters/numbers/dot/dash only, 1–20 chars
+// Basic ticker whitelist: letters/numbers/dot/dash only, 1–20 chars
 const TICKER_RE = /^[A-Z0-9.\-]{1,20}$/;
 
 export function MyPortfolioPage() {
@@ -44,25 +44,45 @@ export function MyPortfolioPage() {
   const [tradePage, setTradePage] = useState(1);
 
   // who am I?
-  const { data: meData } = useQuery({ queryKey: ["me"], queryFn: me });
+  const { data: meData, isLoading: meLoading } = useQuery({ queryKey: ["me"], queryFn: me, staleTime: 15_000 });
 
-  // fetch *my* portfolio directly (fast + avoids flicker)
+  // If user is a guest, kick them to login for this page
+  useEffect(() => {
+    if (!meLoading && !meData) {
+      nav("/login", { replace: true });
+    }
+  }, [meLoading, meData, nav]);
+
+  // Try fast “mine” endpoint; if it’s missing (404/405), fall back to list scan.
   const mineQ = useQuery({
     queryKey: ["my-portfolio"],
-    enabled: !!meData?.username, // wait for auth known
+    enabled: !!meData?.username,
     retry: false,
     queryFn: async () => {
-      try {
-        return await apiFetch<Portfolio>("/api/portfolios/mine/", { auth: true });
-      } catch (e: any) {
-        // propagate HTTP status so we can differentiate 404 vs others
-        e.status = e?.status ?? e?.response?.status ?? 0;
-        throw e;
-      }
+      const res = await apiFetch<Portfolio>("/api/portfolios/mine/", { auth: true });
+      return res;
     },
   });
 
-  // set local pid when data arrives (kept for hooks & deletes)
+  // Fallback loader if /mine/ is not implemented on backend
+  useEffect(() => {
+    const err: any = (mineQ as any).error;
+    const endpointMissing = mineQ.isError && (err?.status === 404 || err?.status === 405 || err?.status === 501);
+    if (endpointMissing && meData?.username && pid == null) {
+      (async () => {
+        try {
+          const res = await apiFetch<any>("/api/portfolios/", { auth: true });
+          const list: Portfolio[] = Array.isArray(res) ? res : res?.results || [];
+          const mine = list.find((p: any) => p.owner_username === meData.username);
+          if (mine?.id) setPid(mine.id);
+        } catch {
+          // swallow; UI shows create screen only if confirmed 404 below
+        }
+      })();
+    }
+  }, [mineQ.isError, (mineQ as any).error, meData?.username, pid]);
+
+  // set local pid when mineQ succeeds
   useEffect(() => {
     if (mineQ.data?.id) setPid(mineQ.data.id);
   }, [mineQ.data?.id]);
@@ -75,7 +95,7 @@ export function MyPortfolioPage() {
   // init if missing
   const createPortfolio = useCreatePortfolio();
 
-  // data queries (guarded)
+  // guarded data queries
   const { data: pf } = usePortfolio(pid ?? 0, { enabled: pid != null });
   const { data: alloc } = useAllocations(pid ?? 0, { enabled: pid != null });
   const { data: chart } = useChart(pid ?? 0, range, { enabled: pid != null });
@@ -101,15 +121,17 @@ export function MyPortfolioPage() {
   const [mode, setMode] = useState<"BUY" | "SELL">("BUY");
   const currentCash = toNum(pf?.cash ?? 0);
 
-  // block rendering until we know auth + whether user has a portfolio
-  if (!meData || mineQ.isLoading) {
+  // block render until we know auth state
+  if (meLoading) {
     return <div className="mx-auto max-w-6xl px-4 py-10">Loading…</div>;
   }
 
-  const noPortfolio = mineQ.isError && (mineQ as any).error?.status === 404;
+  const noPortfolio =
+    (mineQ.isError && (mineQ as any).error?.status === 404 && pid == null) ||
+    (meData && !pid && !mineQ.isLoading && !mineQ.data);
 
-  // Create portfolio screen (only after confirmed 404)
-  if (noPortfolio && pid == null) {
+  // Create portfolio screen (only after confirmed none)
+  if (noPortfolio) {
     return (
       <div className="mx-auto max-w-3xl space-y-6">
         <h2 className="text-2xl font-semibold">Create your portfolio</h2>
@@ -147,7 +169,6 @@ export function MyPortfolioPage() {
   const qtyNum = Number(qty);
   const tickerValid = TICKER_RE.test(cleanedTicker);
   const qtyValid = Number.isFinite(qtyNum) && qtyNum > 0;
-
   const tradeDisabled = !tickerValid || !qtyValid || tradePending || pid == null;
 
   return (
@@ -193,7 +214,6 @@ export function MyPortfolioPage() {
         {/* Remove Cash */}
         <div className="card p-4 space-y-3 w-full max-w-md">
           <h3 className="font-medium">Remove Cash</h3>
-
           <div className="flex gap-2">
             <Input
               placeholder={`Up to $${fmt(currentCash, 2)}`}
@@ -368,43 +388,57 @@ export function MyPortfolioPage() {
               <th className="px-4 py-3">Ticker</th>
               <th className="px-4 py-3">Qty</th>
               <th className="px-4 py-3">Avg Cost</th>
+              <th className="px-4 py-3">Price</th>
               <th className="px-4 py-3">Value</th>
               <th className="px-4 py-3">P/L $</th>
               <th className="px-4 py-3">P/L %</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-stroke-soft">
-            {pf?.holdings?.map((h: any) => (
-              <tr key={h.id}>
-                <td className="px-4 py-3">{h.ticker}</td>
-                <td className="px-4 py-3 tnum">{fmt(toNum(h.quantity), 4)}</td>
-                <td className="px-4 py-3 tnum">${fmt(toNum(h.avg_cost), 4)}</td>
-                <td className="px-4 py-3 tnum">
-                  {h.value != null ? `$${fmt(toNum(h.value), 2)}` : "-"}
-                </td>
-                <td
-                  className={`px-4 py-3 tnum ${
-                    toNum(h.pl_abs) >= 0 ? "text-success-600" : "text-danger-600"
-                  }`}
-                >
-                  {h.pl_abs != null
-                    ? `${toNum(h.pl_abs) >= 0 ? "+" : ""}$${fmt(toNum(h.pl_abs), 2)}`
-                    : "-"}
-                </td>
-                <td
-                  className={`px-4 py-3 tnum ${
-                    toNum(h.pl_pct) >= 0 ? "text-success-600" : "text-danger-600"
-                  }`}
-                >
-                  {h.pl_pct != null
-                    ? `${toNum(h.pl_pct) >= 0 ? "+" : ""}${fmt(toNum(h.pl_pct), 2)}%`
-                    : "-"}
-                </td>
-              </tr>
-            ))}
+            {(pf?.holdings ?? []).map((h: any) => {
+              const qtyNum = toNum(h.quantity);
+              const livePrice =
+                h?.price != null
+                  ? toNum(h.price)
+                  : qtyNum && Number.isFinite(qtyNum) && qtyNum !== 0 && h?.value != null
+                  ? toNum(h.value) / qtyNum
+                  : NaN;
+
+              return (
+                <tr key={h.id}>
+                  <td className="px-4 py-3">{h.ticker}</td>
+                  <td className="px-4 py-3 tnum">{fmt(qtyNum, 4)}</td>
+                  <td className="px-4 py-3 tnum">${fmt(toNum(h.avg_cost), 4)}</td>
+                  <td className="px-4 py-3 tnum">
+                    {Number.isFinite(livePrice) ? `$${fmt(livePrice, 4)}` : "-"}
+                  </td>
+                  <td className="px-4 py-3 tnum">
+                    {h.value != null ? `$${fmt(toNum(h.value), 2)}` : "-"}
+                  </td>
+                  <td
+                    className={`px-4 py-3 tnum ${
+                      toNum(h.pl_abs) >= 0 ? "text-success-600" : "text-danger-600"
+                    }`}
+                  >
+                    {h.pl_abs != null
+                      ? `${toNum(h.pl_abs) >= 0 ? "+" : ""}$${fmt(toNum(h.pl_abs), 2)}`
+                      : "-"}
+                  </td>
+                  <td
+                    className={`px-4 py-3 tnum ${
+                      toNum(h.pl_pct) >= 0 ? "text-success-600" : "text-danger-600"
+                    }`}
+                  >
+                    {h.pl_pct != null
+                      ? `${toNum(h.pl_pct) >= 0 ? "+" : ""}${fmt(toNum(h.pl_pct), 2)}%`
+                      : "-"}
+                  </td>
+                </tr>
+              );
+            })}
             {(!pf?.holdings || pf.holdings.length === 0) && (
               <tr>
-                <td className="px-4 py-6 text-text-muted" colSpan={6}>
+                <td className="px-4 py-6 text-text-muted" colSpan={7}>
                   No positions.
                 </td>
               </tr>
