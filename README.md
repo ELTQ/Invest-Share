@@ -1,1 +1,1 @@
-"# $(basename "$PWD")"  
+Platform for sharing investment portfolio with others.
